@@ -909,6 +909,19 @@ char *msdos_short_path(char *path)
 	return(tmp);
 }
 
+char *msdos_short_name(WIN32_FIND_DATA *fd)
+{
+	static char tmp[MAX_PATH];
+
+	if (fd->cAlternateFileName[0]) {
+		strcpy(tmp, fd->cAlternateFileName);
+	} else {
+		strcpy(tmp, fd->cFileName);
+	}
+	my_strupr(tmp);
+	return(tmp);
+}
+
 char *msdos_short_full_path(char *path)
 {
 	static char tmp[MAX_PATH];
@@ -3393,7 +3406,7 @@ inline void msdos_int_21h_11h()
 			ext_find->attribute = (UINT8)(fd.dwFileAttributes & 0x3f);
 		}
 		find->drive = _getdrive();
-		msdos_set_fcb_path((fcb_t *)find, msdos_short_path(fd.cFileName));
+		msdos_set_fcb_path((fcb_t *)find, msdos_short_name(&fd));
 		find->attribute = (UINT8)(fd.dwFileAttributes & 0x3f);
 		find->nt_res = 0;
 		msdos_find_file_conv_local_time(&fd);
@@ -3459,7 +3472,7 @@ inline void msdos_int_21h_12h()
 			ext_find->attribute = (UINT8)(fd.dwFileAttributes & 0x3f);
 		}
 		find->drive = _getdrive();
-		msdos_set_fcb_path((fcb_t *)find, msdos_short_path(fd.cFileName));
+		msdos_set_fcb_path((fcb_t *)find, msdos_short_name(&fd));
 		find->attribute = (UINT8)(fd.dwFileAttributes & 0x3f);
 		find->nt_res = 0;
 		msdos_find_file_conv_local_time(&fd);
@@ -4414,7 +4427,7 @@ inline void msdos_int_21h_4eh()
 		msdos_find_file_conv_local_time(&fd);
 		FileTimeToDosDateTime(&fd.ftLastWriteTime, &find->date, &find->time);
 		find->size = fd.nFileSizeLow;
-		strcpy(find->name, msdos_short_path(fd.cFileName));
+		strcpy(find->name, msdos_short_name(&fd));
 		REG16(AX) = 0;
 	} else if(process->allowable_mask & 8) {
 		find->attrib = 8;
@@ -4453,7 +4466,7 @@ inline void msdos_int_21h_4fh()
 		msdos_find_file_conv_local_time(&fd);
 		FileTimeToDosDateTime(&fd.ftLastWriteTime, &find->date, &find->time);
 		find->size = fd.nFileSizeLow;
-		strcpy(find->name, msdos_short_path(fd.cFileName));
+		strcpy(find->name, msdos_short_name(&fd));
 		REG16(AX) = 0;
 	} else if(process->allowable_mask & 8) {
 		find->attrib = 8;
@@ -5063,7 +5076,7 @@ inline void msdos_int_21h_714eh()
 		find->size_hi = fd.nFileSizeHigh;
 		find->size_lo = fd.nFileSizeLow;
 		strcpy(find->full_name, fd.cFileName);
-		strcpy(find->short_name, msdos_short_path(fd.cFileName));
+		strcpy(find->short_name, fd.cAlternateFileName);
 	} else if(process->allowable_mask & 8) {
 		// volume label
 		find->attrib = 8;
@@ -5115,7 +5128,7 @@ inline void msdos_int_21h_714fh()
 		find->size_hi = fd.nFileSizeHigh;
 		find->size_lo = fd.nFileSizeLow;
 		strcpy(find->full_name, fd.cFileName);
-		strcpy(find->short_name, msdos_short_path(fd.cFileName));
+		strcpy(find->short_name, fd.cAlternateFileName);
 	} else if(process->allowable_mask & 8) {
 		// volume label
 		find->attrib = 8;
