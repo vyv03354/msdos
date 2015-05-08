@@ -1087,6 +1087,130 @@ char *msdos_short_volume_label(char *label)
 	return(tmp);
 }
 
+errno_t msdos_maperr(unsigned long oserrno)
+{
+	_doserrno = oserrno;
+	switch (oserrno) {
+	case ERROR_FILE_NOT_FOUND:         // 2
+	case ERROR_PATH_NOT_FOUND:         // 3
+	case ERROR_INVALID_DRIVE:          // 15
+	case ERROR_NO_MORE_FILES:          // 18
+	case ERROR_BAD_NETPATH:            // 53
+	case ERROR_BAD_NET_NAME:           // 67
+	case ERROR_BAD_PATHNAME:           // 161
+	case ERROR_FILENAME_EXCED_RANGE:   // 206
+		return ENOENT;
+	case ERROR_TOO_MANY_OPEN_FILES:    // 4
+		return EMFILE;
+	case ERROR_ACCESS_DENIED:          // 5
+	case ERROR_CURRENT_DIRECTORY:      // 16
+	case ERROR_NETWORK_ACCESS_DENIED:  // 65
+	case ERROR_CANNOT_MAKE:            // 82
+	case ERROR_FAIL_I24:               // 83
+	case ERROR_DRIVE_LOCKED:           // 108
+	case ERROR_SEEK_ON_DEVICE:         // 132
+	case ERROR_NOT_LOCKED:             // 158
+	case ERROR_LOCK_FAILED:            // 167
+		return EACCES;
+	case ERROR_INVALID_HANDLE:         // 6
+	case ERROR_INVALID_TARGET_HANDLE:  // 114
+	case ERROR_DIRECT_ACCESS_HANDLE:   // 130
+		return EBADF;
+	case ERROR_ARENA_TRASHED:          // 7
+	case ERROR_NOT_ENOUGH_MEMORY:      // 8
+	case ERROR_INVALID_BLOCK:          // 9
+	case ERROR_NOT_ENOUGH_QUOTA:       // 1816
+		return ENOMEM;
+	case ERROR_BAD_ENVIRONMENT:        // 10
+		return E2BIG;
+	case ERROR_BAD_FORMAT:             // 11
+		return ENOEXEC;
+	case ERROR_NOT_SAME_DEVICE:        // 17
+		return EXDEV;
+	case ERROR_FILE_EXISTS:            // 80
+	case ERROR_ALREADY_EXISTS:         // 183
+		return EEXIST;
+	case ERROR_NO_PROC_SLOTS:          // 89
+	case ERROR_MAX_THRDS_REACHED:      // 164
+	case ERROR_NESTING_NOT_ALLOWED:    // 215
+		return EAGAIN;
+	case ERROR_BROKEN_PIPE:            // 109
+		return EPIPE;
+	case ERROR_DISK_FULL:              // 112
+		return ENOSPC;
+	case ERROR_WAIT_NO_CHILDREN:       // 128
+	case ERROR_CHILD_NOT_COMPLETE:     // 129
+		return ECHILD;
+	case ERROR_DIR_NOT_EMPTY:          // 145
+		return ENOTEMPTY;
+	}
+	if (oserrno >= ERROR_WRITE_PROTECT /* 19 */ &&
+		oserrno <= ERROR_SHARING_BUFFER_EXCEEDED /* 36 */) {
+		return EACCES;
+	}
+	if (oserrno >= ERROR_INVALID_STARTING_CODESEG /* 188 */ &&
+		oserrno <= ERROR_INFLOOP_IN_RELOC_CHAIN /* 202 */) {
+		return ENOEXEC;
+	}
+	return EINVAL;
+}
+
+int msdos_open(const char *filename, int oflag)
+{
+	if ((oflag & (_O_RDONLY | _O_WRONLY | _O_RDWR)) != _O_RDONLY) {
+		return _open(filename, oflag);
+	}
+
+	SECURITY_ATTRIBUTES sa = { sizeof SECURITY_ATTRIBUTES, NULL, !(oflag & _O_NOINHERIT) };
+	DWORD disposition;
+	switch (oflag & (_O_CREAT | _O_EXCL | _O_TRUNC)) {
+	case 0:
+	case _O_EXCL:
+		disposition = OPEN_EXISTING;
+		break;
+
+	case _O_CREAT:
+		disposition = OPEN_ALWAYS;
+		break;
+
+	case _O_CREAT | _O_EXCL:
+	case _O_CREAT | _O_TRUNC | _O_EXCL:
+		disposition = CREATE_NEW;
+		break;
+
+	case _O_TRUNC:
+	case _O_TRUNC | _O_EXCL:
+		disposition = TRUNCATE_EXISTING;
+		break;
+
+	case _O_CREAT | _O_TRUNC:
+		disposition = CREATE_ALWAYS;
+		break;
+	}
+
+	HANDLE h = CreateFile(filename, GENERIC_READ | FILE_WRITE_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, disposition,
+		FILE_ATTRIBUTE_NORMAL, NULL);
+	if (h == INVALID_HANDLE_VALUE) {
+		// FILE_WRITE_ATTRIBUTES may not be granted for standard users.
+		// Retry without FILE_WRITE_ATTRIBUTES.
+		h = CreateFile(filename, GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, disposition,
+			FILE_ATTRIBUTE_NORMAL, NULL);
+		if (h == INVALID_HANDLE_VALUE) {
+			errno = msdos_maperr(GetLastError());
+			return -1;
+		}
+	}
+
+	int fd = _open_osfhandle((intptr_t) h, oflag);
+	if (fd == -1) {
+		CloseHandle(h);
+	}
+
+	return fd;
+}
+
 void msdos_file_handler_open(int fd, char *path, int atty, int mode, UINT16 info, UINT16 psp_seg)
 {
 	static int id = 0;
@@ -3808,10 +3932,10 @@ inline void msdos_int_21h_3dh()
 	
 	if(mode < 0x03) {
 		if(msdos_is_con_path(path)) {
-			fd = _open("CON", file_mode[mode].mode);
+			fd = msdos_open("CON", file_mode[mode].mode);
 			info = 0x80d3;
 		} else {
-			fd = _open(path, file_mode[mode].mode);
+			fd = msdos_open(path, file_mode[mode].mode);
 			info = msdos_drive_number(path);
 		}
 		if(fd != -1) {
@@ -4822,10 +4946,10 @@ inline void msdos_int_21h_6ch(int lfn)
 				UINT16 info;
 				
 				if(msdos_is_con_path(path)) {
-					fd = _open("CON", file_mode[mode].mode);
+					fd = msdos_open("CON", file_mode[mode].mode);
 					info = 0x80d3;
 				} else {
-					fd = _open(path, file_mode[mode].mode);
+					fd = msdos_open(path, file_mode[mode].mode);
 					info = msdos_drive_number(path);
 				}
 				if(fd != -1) {
@@ -4842,7 +4966,7 @@ inline void msdos_int_21h_6ch(int lfn)
 				UINT16 info;
 				
 				if(msdos_is_con_path(path)) {
-					fd = _open("CON", file_mode[mode].mode);
+					fd = msdos_open("CON", file_mode[mode].mode);
 					info = 0x80d3;
 				} else {
 					fd = _open(path, _O_RDWR | _O_BINARY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);

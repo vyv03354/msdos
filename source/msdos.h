@@ -435,8 +435,7 @@ static const struct {
 	int in;
 	int out;
 } file_mode[] = {
-//	{ _O_RDONLY | _O_BINARY, 1, 0 },
-	{ _O_RDWR   | _O_BINARY, 1, 0 }, // for bupdate.exe
+	{ _O_RDONLY | _O_BINARY, 1, 0 },
 	{ _O_WRONLY | _O_BINARY, 0, 1 },
 	{ _O_RDWR   | _O_BINARY, 1, 1 },
 };
