@@ -2057,7 +2057,7 @@ int msdos_process_exec(char *cmd, param_block_t *param, UINT8 al)
 					strcpy(opt, tmp);
 					opt_len = strlen(opt);
 					mem[opt_ofs] = opt_len;
-					strcpy((char *)(mem + opt_ofs + 1), opt);
+					sprintf((char *)(mem + opt_ofs + 1), "%s\x0d", opt);
 					break;
 				}
 			}
