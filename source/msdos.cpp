@@ -734,6 +734,47 @@ process_t *msdos_process_info_get(UINT16 psp_seg)
 	return(NULL);
 }
 
+// dta info
+
+void msdos_dta_info_init()
+{
+	for (int i = 0; i < MAX_DTAINFO; i++) {
+		dtalist[i].find_handle = INVALID_HANDLE_VALUE;
+	}
+}
+
+dtainfo_t *msdos_dta_info_get(UINT16 psp_seg, UINT32 dta_laddr)
+{
+	dtainfo_t *free_dta = NULL;
+	for (int i = 0; i < MAX_DTAINFO; i++) {
+		if (dtalist[i].find_handle == INVALID_HANDLE_VALUE) {
+			if (free_dta == NULL) {
+				free_dta = &dtalist[i];
+			}
+		} else if (dta_laddr < LFN_DTA_LADDR && dtalist[i].dta == dta_laddr) {
+			return(&dtalist[i]);
+		}
+	}
+	if (free_dta) {
+		free_dta->psp = psp_seg;
+		free_dta->dta = dta_laddr;
+		return(free_dta);
+	}
+	fatalerror("too many dta\n");
+	return(NULL);
+}
+
+void msdos_dta_info_free(UINT16 psp_seg)
+{
+	for (int i = 0; i < MAX_DTAINFO; i++) {
+		if (dtalist[i].psp == psp_seg &&
+			dtalist[i].find_handle != INVALID_HANDLE_VALUE) {
+			FindClose(dtalist[i].find_handle);
+			dtalist[i].find_handle = INVALID_HANDLE_VALUE;
+		}
+	}
+}
+
 void msdos_cds_update(int drv)
 {
 	cds_t *cds = (cds_t *)(mem + CDS_TOP);
@@ -2233,7 +2274,6 @@ int msdos_process_exec(char *cmd, param_block_t *param, UINT8 al)
 	process->dta.w.h = psp_seg;
 	process->switchar = '/';
 	process->max_files = 20;
-	process->find_handle = INVALID_HANDLE_VALUE;
 	process->parent_int_10h_feh_called = int_10h_feh_called;
 	process->parent_int_10h_ffh_called = int_10h_ffh_called;
 	
@@ -2301,10 +2341,7 @@ void msdos_process_terminate(int psp_seg, int ret, int mem_free)
 		}
 		msdos_stdio_reopen();
 		
-		if(process->find_handle != INVALID_HANDLE_VALUE) {
-			FindClose(process->find_handle);
-			process->find_handle = INVALID_HANDLE_VALUE;
-		}
+		msdos_dta_info_free(psp_seg);
 	}
 	
 	memset(process, 0, sizeof(process_t));
@@ -3375,14 +3412,16 @@ inline void msdos_int_21h_11h()
 	fcb_t *fcb = (fcb_t *)(mem + SREG_BASE(DS) + REG16(DX) + (ext_fcb->flag == 0xff ? 7 : 0));
 	
 	process_t *process = msdos_process_info_get(current_psp);
-	ext_fcb_t *ext_find = (ext_fcb_t *)(mem + (process->dta.w.h << 4) + process->dta.w.l);
-	find_fcb_t *find = (find_fcb_t *)(mem + (process->dta.w.h << 4) + process->dta.w.l + (ext_fcb->flag == 0xff ? 7 : 0));
+	UINT32 dta_laddr = (process->dta.w.h << 4) + process->dta.w.l;
+	ext_fcb_t *ext_find = (ext_fcb_t *)(mem + dta_laddr);
+	find_fcb_t *find = (find_fcb_t *)(mem + dta_laddr + (ext_fcb->flag == 0xff ? 7 : 0));
 	char *path = msdos_fcb_path(fcb);
 	WIN32_FIND_DATA fd;
 	
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
-		FindClose(process->find_handle);
-		process->find_handle = INVALID_HANDLE_VALUE;
+	dtainfo_t *dtainfo = msdos_dta_info_get(current_psp, dta_laddr);
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
+		FindClose(dtainfo->find_handle);
+		dtainfo->find_handle = INVALID_HANDLE_VALUE;
 	}
 	strcpy(process->volume_label, msdos_volume_label(path));
 	process->allowable_mask = (ext_fcb->flag == 0xff) ? ext_fcb->attribute : 0x20;
@@ -3390,16 +3429,16 @@ inline void msdos_int_21h_11h()
 	if((process->allowable_mask & 8) && !msdos_match_volume_label(path, msdos_short_volume_label(process->volume_label))) {
 		process->allowable_mask &= ~8;
 	}
-	if((process->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
+	if((dtainfo->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
 		while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
-			if(!FindNextFile(process->find_handle, &fd)) {
-				FindClose(process->find_handle);
-				process->find_handle = INVALID_HANDLE_VALUE;
+			if(!FindNextFile(dtainfo->find_handle, &fd)) {
+				FindClose(dtainfo->find_handle);
+				dtainfo->find_handle = INVALID_HANDLE_VALUE;
 				break;
 			}
 		}
 	}
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		if(ext_fcb->flag == 0xff) {
 			ext_find->flag = 0xff;
 			memset(ext_find->reserved, 0, 5);
@@ -3447,25 +3486,27 @@ inline void msdos_int_21h_12h()
 	fcb_t *fcb = (fcb_t *)(mem + SREG_BASE(DS) + REG16(DX) + (ext_fcb->flag == 0xff ? 7 : 0));
 	
 	process_t *process = msdos_process_info_get(current_psp);
-	ext_fcb_t *ext_find = (ext_fcb_t *)(mem + (process->dta.w.h << 4) + process->dta.w.l);
-	find_fcb_t *find = (find_fcb_t *)(mem + (process->dta.w.h << 4) + process->dta.w.l + (ext_fcb->flag == 0xff ? 7 : 0));
+	UINT32 dta_laddr = (process->dta.w.h << 4) + process->dta.w.l;
+	ext_fcb_t *ext_find = (ext_fcb_t *)(mem + dta_laddr);
+	find_fcb_t *find = (find_fcb_t *)(mem + dta_laddr + (ext_fcb->flag == 0xff ? 7 : 0));
 	WIN32_FIND_DATA fd;
 	
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
-		if(FindNextFile(process->find_handle, &fd)) {
+	dtainfo_t *dtainfo = msdos_dta_info_get(current_psp, dta_laddr);
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
+		if(FindNextFile(dtainfo->find_handle, &fd)) {
 			while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
-				if(!FindNextFile(process->find_handle, &fd)) {
-					FindClose(process->find_handle);
-					process->find_handle = INVALID_HANDLE_VALUE;
+				if(!FindNextFile(dtainfo->find_handle, &fd)) {
+					FindClose(dtainfo->find_handle);
+					dtainfo->find_handle = INVALID_HANDLE_VALUE;
 					break;
 				}
 			}
 		} else {
-			FindClose(process->find_handle);
-			process->find_handle = INVALID_HANDLE_VALUE;
+			FindClose(dtainfo->find_handle);
+			dtainfo->find_handle = INVALID_HANDLE_VALUE;
 		}
 	}
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		if(ext_fcb->flag == 0xff) {
 			ext_find->flag = 0xff;
 			memset(ext_find->reserved, 0, 5);
@@ -4399,13 +4440,15 @@ inline void msdos_int_21h_4dh()
 inline void msdos_int_21h_4eh()
 {
 	process_t *process = msdos_process_info_get(current_psp);
-	find_t *find = (find_t *)(mem + (process->dta.w.h << 4) + process->dta.w.l);
+	UINT32 dta_laddr = (process->dta.w.h << 4) + process->dta.w.l;
+	find_t *find = (find_t *)(mem + dta_laddr);
 	char *path = msdos_trimmed_path((char *)(mem + SREG_BASE(DS) + REG16(DX)), 0);
 	WIN32_FIND_DATA fd;
 	
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
-		FindClose(process->find_handle);
-		process->find_handle = INVALID_HANDLE_VALUE;
+	dtainfo_t *dtainfo = msdos_dta_info_get(current_psp, dta_laddr);
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
+		FindClose(dtainfo->find_handle);
+		dtainfo->find_handle = INVALID_HANDLE_VALUE;
 	}
 	strcpy(process->volume_label, msdos_volume_label(path));
 	process->allowable_mask = REG8(CL);
@@ -4413,16 +4456,16 @@ inline void msdos_int_21h_4eh()
 	if((process->allowable_mask & 8) && !msdos_match_volume_label(path, msdos_short_volume_label(process->volume_label))) {
 		process->allowable_mask &= ~8;
 	}
-	if((process->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
+	if((dtainfo->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
 		while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
-			if(!FindNextFile(process->find_handle, &fd)) {
-				FindClose(process->find_handle);
-				process->find_handle = INVALID_HANDLE_VALUE;
+			if(!FindNextFile(dtainfo->find_handle, &fd)) {
+				FindClose(dtainfo->find_handle);
+				dtainfo->find_handle = INVALID_HANDLE_VALUE;
 				break;
 			}
 		}
 	}
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		find->attrib = (UINT8)(fd.dwFileAttributes & 0x3f);
 		msdos_find_file_conv_local_time(&fd);
 		FileTimeToDosDateTime(&fd.ftLastWriteTime, &find->date, &find->time);
@@ -4444,24 +4487,26 @@ inline void msdos_int_21h_4eh()
 inline void msdos_int_21h_4fh()
 {
 	process_t *process = msdos_process_info_get(current_psp);
-	find_t *find = (find_t *)(mem + (process->dta.w.h << 4) + process->dta.w.l);
+	UINT32 dta_laddr = (process->dta.w.h << 4) + process->dta.w.l;
+	find_t *find = (find_t *)(mem + dta_laddr);
 	WIN32_FIND_DATA fd;
 	
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
-		if(FindNextFile(process->find_handle, &fd)) {
+	dtainfo_t *dtainfo = msdos_dta_info_get(current_psp, dta_laddr);
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
+		if(FindNextFile(dtainfo->find_handle, &fd)) {
 			while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
-				if(!FindNextFile(process->find_handle, &fd)) {
-					FindClose(process->find_handle);
-					process->find_handle = INVALID_HANDLE_VALUE;
+				if(!FindNextFile(dtainfo->find_handle, &fd)) {
+					FindClose(dtainfo->find_handle);
+					dtainfo->find_handle = INVALID_HANDLE_VALUE;
 					break;
 				}
 			}
 		} else {
-			FindClose(process->find_handle);
-			process->find_handle = INVALID_HANDLE_VALUE;
+			FindClose(dtainfo->find_handle);
+			dtainfo->find_handle = INVALID_HANDLE_VALUE;
 		}
 	}
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		find->attrib = (UINT8)(fd.dwFileAttributes & 0x3f);
 		msdos_find_file_conv_local_time(&fd);
 		FileTimeToDosDateTime(&fd.ftLastWriteTime, &find->date, &find->time);
@@ -5038,9 +5083,10 @@ inline void msdos_int_21h_714eh()
 	char *path = (char *)(mem + SREG_BASE(DS) + REG16(DX));
 	WIN32_FIND_DATA fd;
 	
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
-		FindClose(process->find_handle);
-		process->find_handle = INVALID_HANDLE_VALUE;
+	dtainfo_t *dtainfo = msdos_dta_info_get(current_psp, LFN_DTA_LADDR);
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
+		FindClose(dtainfo->find_handle);
+		dtainfo->find_handle = INVALID_HANDLE_VALUE;
 	}
 	strcpy(process->volume_label, msdos_volume_label(path));
 	process->allowable_mask = REG8(CL);
@@ -5049,16 +5095,16 @@ inline void msdos_int_21h_714eh()
 	if((process->allowable_mask & 8) && !msdos_match_volume_label(path, process->volume_label) && !msdos_match_volume_label(path, msdos_short_volume_label(process->volume_label))) {
 		process->allowable_mask &= ~8;
 	}
-	if((process->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
+	if((dtainfo->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
 		while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, process->required_mask)) {
-			if(!FindNextFile(process->find_handle, &fd)) {
-				FindClose(process->find_handle);
-				process->find_handle = INVALID_HANDLE_VALUE;
+			if(!FindNextFile(dtainfo->find_handle, &fd)) {
+				FindClose(dtainfo->find_handle);
+				dtainfo->find_handle = INVALID_HANDLE_VALUE;
 				break;
 			}
 		}
 	}
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		find->attrib = fd.dwFileAttributes;
 		msdos_find_file_conv_local_time(&fd);
 		if(REG16(SI) == 0) {
@@ -5077,6 +5123,7 @@ inline void msdos_int_21h_714eh()
 		find->size_lo = fd.nFileSizeLow;
 		strcpy(find->full_name, fd.cFileName);
 		strcpy(find->short_name, fd.cAlternateFileName);
+		REG16(AX) = dtainfo - dtalist;
 	} else if(process->allowable_mask & 8) {
 		// volume label
 		find->attrib = 8;
@@ -5084,6 +5131,7 @@ inline void msdos_int_21h_714eh()
 		strcpy(find->full_name, process->volume_label);
 		strcpy(find->short_name, msdos_short_volume_label(process->volume_label));
 		process->allowable_mask &= ~8;
+		REG16(AX) = dtainfo - dtalist;
 	} else {
 		REG16(AX) = 0x12;	// NOTE: return 0x02 if file path is invalid
 		m_CF = 1;
@@ -5096,21 +5144,27 @@ inline void msdos_int_21h_714fh()
 	find_lfn_t *find = (find_lfn_t *)(mem + SREG_BASE(ES) + REG16(DI));
 	WIN32_FIND_DATA fd;
 	
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
-		if(FindNextFile(process->find_handle, &fd)) {
+	if (REG16(BX) >= MAX_DTAINFO) {
+		REG16(AX) = EBADF;
+		m_CF = 1;
+		return;
+	}
+	dtainfo_t *dtainfo = &dtalist[REG16(BX)];
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
+		if(FindNextFile(dtainfo->find_handle, &fd)) {
 			while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, process->required_mask)) {
-				if(!FindNextFile(process->find_handle, &fd)) {
-					FindClose(process->find_handle);
-					process->find_handle = INVALID_HANDLE_VALUE;
+				if(!FindNextFile(dtainfo->find_handle, &fd)) {
+					FindClose(dtainfo->find_handle);
+					dtainfo->find_handle = INVALID_HANDLE_VALUE;
 					break;
 				}
 			}
 		} else {
-			FindClose(process->find_handle);
-			process->find_handle = INVALID_HANDLE_VALUE;
+			FindClose(dtainfo->find_handle);
+			dtainfo->find_handle = INVALID_HANDLE_VALUE;
 		}
 	}
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		find->attrib = fd.dwFileAttributes;
 		msdos_find_file_conv_local_time(&fd);
 		if(REG16(SI) == 0) {
@@ -5161,9 +5215,15 @@ inline void msdos_int_21h_71a1h()
 	process_t *process = msdos_process_info_get(current_psp);
 	find_t *find = (find_t *)(mem + (process->dta.w.h << 4) + process->dta.w.l);
 	
-	if(process->find_handle != INVALID_HANDLE_VALUE) {
-		FindClose(process->find_handle);
-		process->find_handle = INVALID_HANDLE_VALUE;
+	if (REG16(BX) >= MAX_DTAINFO) {
+		REG16(AX) = EBADF;
+		m_CF = 1;
+		return;
+	}
+	dtainfo_t *dtainfo = &dtalist[REG16(BX)];
+	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
+		FindClose(dtainfo->find_handle);
+		dtainfo->find_handle = INVALID_HANDLE_VALUE;
 	}
 }
 
@@ -5984,6 +6044,9 @@ int msdos_init(int argc, char *argv[], char *envp[], int standard_env)
 	
 	// init process
 	memset(process, 0, sizeof(process));
+	
+	// init dtainfo
+	msdos_dta_info_init();
 	
 	// init memory
 	memset(mem, 0, sizeof(mem));
