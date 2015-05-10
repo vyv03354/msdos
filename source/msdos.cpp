@@ -3918,8 +3918,8 @@ inline void msdos_int_21h_36h()
 	if(_getdiskfree(REG8(DL), &df) == 0) {
 		REG16(AX) = (UINT16)df.sectors_per_cluster;
 		REG16(CX) = (UINT16)df.bytes_per_sector;
-		REG16(BX) = (UINT16)df.avail_clusters;
-		REG16(DX) = (UINT16)df.total_clusters;
+		REG16(BX) = df.avail_clusters > 0xFFFF ? 0xFFFF : (UINT16)df.avail_clusters;
+		REG16(DX) = df.total_clusters > 0xFFFF ? 0xFFFF : (UINT16)df.total_clusters;
 	} else {
 		REG16(AX) = 0xffff;
 	}
