@@ -1349,6 +1349,22 @@ int msdos_find_file_check_attribute(int attribute, int allowed_mask, int require
 	}
 }
 
+int msdos_find_file_has_8dot3name(WIN32_FIND_DATA *fd)
+{
+	if (fd->cAlternateFileName[0]) {
+		return 1;
+	}
+	size_t len = strlen(fd->cFileName);
+	if (len > 12) {
+		return 0;
+	}
+	const char *ext = strrchr(fd->cFileName, '.');
+	if ((ext ? ext - fd->cFileName : len) > 8) {
+		return 0;
+	}
+	return 1;
+}
+
 void msdos_find_file_conv_local_time(WIN32_FIND_DATA *fd)
 {
 	FILETIME local;
@@ -3430,7 +3446,8 @@ inline void msdos_int_21h_11h()
 		process->allowable_mask &= ~8;
 	}
 	if((dtainfo->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
-		while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
+		while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0) ||
+		      !msdos_find_file_has_8dot3name(&fd)) {
 			if(!FindNextFile(dtainfo->find_handle, &fd)) {
 				FindClose(dtainfo->find_handle);
 				dtainfo->find_handle = INVALID_HANDLE_VALUE;
@@ -3494,7 +3511,8 @@ inline void msdos_int_21h_12h()
 	dtainfo_t *dtainfo = msdos_dta_info_get(current_psp, dta_laddr);
 	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		if(FindNextFile(dtainfo->find_handle, &fd)) {
-			while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
+			while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0) ||
+			      !msdos_find_file_has_8dot3name(&fd)) {
 				if(!FindNextFile(dtainfo->find_handle, &fd)) {
 					FindClose(dtainfo->find_handle);
 					dtainfo->find_handle = INVALID_HANDLE_VALUE;
@@ -4457,7 +4475,8 @@ inline void msdos_int_21h_4eh()
 		process->allowable_mask &= ~8;
 	}
 	if((dtainfo->find_handle = FindFirstFile(path, &fd)) != INVALID_HANDLE_VALUE) {
-		while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
+		while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0) ||
+		      !msdos_find_file_has_8dot3name(&fd)) {
 			if(!FindNextFile(dtainfo->find_handle, &fd)) {
 				FindClose(dtainfo->find_handle);
 				dtainfo->find_handle = INVALID_HANDLE_VALUE;
@@ -4494,7 +4513,8 @@ inline void msdos_int_21h_4fh()
 	dtainfo_t *dtainfo = msdos_dta_info_get(current_psp, dta_laddr);
 	if(dtainfo->find_handle != INVALID_HANDLE_VALUE) {
 		if(FindNextFile(dtainfo->find_handle, &fd)) {
-			while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0)) {
+			while(!msdos_find_file_check_attribute(fd.dwFileAttributes, process->allowable_mask, 0) ||
+			      !msdos_find_file_has_8dot3name(&fd)) {
 				if(!FindNextFile(dtainfo->find_handle, &fd)) {
 					FindClose(dtainfo->find_handle);
 					dtainfo->find_handle = INVALID_HANDLE_VALUE;
